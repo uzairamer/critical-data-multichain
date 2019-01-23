@@ -1,0 +1,175 @@
+
+=============
+Prerequisites
+=============
+#Install the following
+multichain2.0, openssl, xxd, tail
+
+=========
+Variables
+=========
+#name of the chain that is used in the entire report
+chain1
+
+#address of the user who wants to access the data of user2
+user1_address
+
+#address of the user who wants to give access of some data to user1
+user2_address
+
+#address of trusted authority, nadra in this case
+trused_authority1_address
+
+#name of streams
+pubkeys, items, access, revoked
+
+=============================================================
+Step0: Trusted authority should create the chain and streams
+=============================================================
+multichain-util create chain1
+multichain-cli chain1 create stream pubkeys false
+multichain-cli chain1 create stream items false
+multichain-cli chain1 create stream revoked false
+multichain-cli chain1 create stream access true
+
+==================================================
+Step0.5: Each user should subscribe to all streams
+==================================================
+multichain-cli chain1 subscribe pubkeys
+multichain-cli chain1 subscribe items
+multichain-cli chain1 subscribe revoked
+multichain-cli chain1 subscribe access
+
+===========================================================================
+Step1: user1 will generate its private key and will store it in a directory
+===========================================================================
+#Get addresses
+multichain-cli chain1 getaddresses
+
+# Make the private key directory
+mkdir ~/.multichain/chain1/stream-privkeys/
+
+#Generate Private Key:
+openssl genpkey -algorithm RSA -out ~/.multichain/chain1/stream-privkeys/user1_address.pem
+
+#Display Private Key:
+cat ~/.multichain/chain1/stream-privkeys/user1_address.pem
+
+#Generate Public Key and convert it to hexadecimal:
+pubkeyhex=$(openssl rsa -pubout -in ~/.multichain/chain1/stream-privkeys/user1_address.pem | xxd -p -c 9999)
+echo $pubkeyhex
+
+===========================================================================
+Step2: user2 will generate its private key and will store it in a directory
+===========================================================================
+#Get addresses
+multichain-cli chain1 getaddresses
+
+#Make the private key directory
+mkdir ~/.multichain/chain1/stream-privkeys/
+
+#Generate Private Key:
+openssl genpkey -algorithm RSA -out ~/.multichain/chain1/stream-privkeys/user2_address.pem
+
+#Display Private Key:
+cat ~/.multichain/chain1/stream-privkeys/user2_address.pem
+
+#Generate Public Key and convert it to hexadecimal:
+pubkeyhex=$(openssl rsa -pubout -in ~/.multichain/chain1/stream-privkeys/user2_address.pem | xxd -p -c 9999)
+echo $pubkeyhex
+
+====================================================================================
+Step3: Truested Authority will publish the public keys of users on the pubkey stream 
+====================================================================================
+#Generate a key for the transaction
+label=user1_address-trused_authority1_address
+
+#Store pubkey of user1 in a variable
+pubkeyhex=<inser-user1-pubkey-hex>
+
+#publish the public key of user1 on pubkey stream
+multichain-cli chain1 publishfrom trused_authority1_address pubkeys $label $pubkeyhex
+
+====================================================================================
+Step3.5: Truested Authority will publish the public keys of users on the pubkey stream 
+====================================================================================
+#Generate a key for the transaction
+label=user2_address-trused_authority1_address
+
+#Store pubkey of user1 in a variable
+pubkeyhex=<inser-user2-pubkey-hex>
+
+#publish the public key of user1 on pubkey stream
+multichain-cli chain1 publishfrom trused_authority1_address pubkeys $label $pubkeyhex
+
+===========================================================
+Step4: Truested Authority will publish the data of the user 
+===========================================================
+#Generating the random r
+random_r=$(openssl rand -base64 48)
+
+#Obtain the data from the file and encrypt it with random r
+encryptedhex=$(openssl enc -aes-256-cbc -in user_data.txt -pass pass:$random_r | xxd -p -c 99999)
+
+#Time to publish the encrypted data on the items stream
+multichain-cli chain1 publishfrom trused_authority1_address items secret-user2_address $cipherhex
+
+#Store the txid of the above transaction on trused authority database and user2 database
+txid_user2_encrypted_data
+
+================================================================
+Step5: Store the random_r against the txid of the encrypted data
+================================================================
+<--On user2 machine-->
+mkdir ~/.multichain/chain1/stream-randoms/
+random_r=<insert-random_r>
+echo $random_r > ~/.multichain/chain1/stream-randoms/txid_user2_encrypted_data.txt
+
+======================================================
+Step6: user2 wants to give access to random_r to user1
+======================================================
+# Geberate the label
+label=user1_address-trused_authority1_address
+multichain-cli chain1 liststreamkeyitems pubkeys $label true
+
+#Use the txid of above transaction to get the actul public key and convert it back from hexadecimal encoding
+multichain-cli chain1 gettxoutdata <above-transaction-txid> 0 | tail -n 1 | xxd -p -r > /tmp/pubkey.pem
+cat /tmp/pubkey.pem
+
+#Encrypt the random_r with the user1's public key
+keycipherhex=$(echo $random_r | openssl rsautl -encrypt -inkey /tmp/pubkey.pem -pubin | xxd -p -c 9999)
+echo $keycipherhex
+
+#Publish it to the access stream
+label=txid_user2_encrypted_data-user1_address
+multichain-cli chain1 publishfrom user2_address access $label $keycipherhex
+
+#Store the txid of above transaction
+txid_random_r_of_user2_for_user1
+
+====================================================
+Step7: user1 will finally get the access to the data
+====================================================
+label=secret-user2_address
+multichain-cli chain1 liststreamkeyitems items $label true 1
+
+#Get the encrypted data from the above transaction's id
+encryptedhex=$(multichain-cli chain1 gettxoutdata <inser-txid-of-above-transaction> 0 | tail -n 1)
+
+#Retrieve and decrypt the random r
+keycipherhex=$(multichain-cli chain1 gettxoutdata txid_random_r_of_user2_for_user1 0 | tail -n 1)
+
+random_r=$(echo $keycipherhex | xxd -p -r | openssl rsautl -decrypt -inkey ~/.multichain/chain1/stream-privkeys/user1_address.pem)
+
+echo $keycipherhex | xxd -p -r | openssl enc -d -aes-256-cbc -pass pass:$random_r
+
+=========
+To revoke
+=========
+multichain-cli chain1 publishfrom trused_authority1_address revoke txid_user2_encrypted_data ''
+
+===================
+To check if revoked
+===================
+#The following should return with a -710 error, otherwise it means that this transaction has been revoked
+multichain-cli chain1 getstreamitem revoked <inser-transaction-id-here> 
